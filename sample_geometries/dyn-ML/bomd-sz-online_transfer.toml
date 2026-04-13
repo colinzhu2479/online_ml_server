@@ -1,0 +1,32 @@
+directory = "bomd-sz-online_transfer"
+
+[layer0]
+name = "Gaussian"
+method_basis = "B3LYP/6-31+G(d,p)"
+
+[[tier]]
+
+    [tier.layer_high]
+    name = "NN_online_f"
+    classify = "True"
+    update = 'True'
+    radius_ratio = 0.8
+    connection = '/N/project/sico/nn_server/connection_ot.txt'
+    [tier.layer_high.inner_mapper_high]
+        name = 'Gaussian'
+        method_basis = 'CCSD/6-31+G(d,p)'
+        [tier.layer_high.inner_mapper_low]
+        name = 'Gaussian'
+        method_basis = 'B3LYP/6-31+G(d,p)'
+
+    [tier.layer_low]
+    name = "NN_nop"
+    method_basis = "pm6"
+
+    [tier.graph]
+    cutoff = "jl"
+    rank = 1
+
+[molecule]
+charge = "water"
+

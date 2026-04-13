@@ -1,0 +1,23 @@
+directory = "bomd-sz-ml"
+
+[layer0]
+name = "Gaussian"
+method_basis = "B3LYP/6-31+G(d,p)"
+
+[[tier]]
+
+    [tier.layer_high]
+    name = "NN_infer"
+    method_basis = "PBE1PBE/6-31+G(d)"
+
+    [tier.layer_low]
+    name = "NN_nop"
+    method_basis = "pm6"
+
+    [tier.graph]
+    cutoff = 6
+    rank = 3
+
+[molecule]
+charge = "water"
+

@@ -1,0 +1,18 @@
+[server]
+connection_file = "/N/project/sico/nn_server/connection_ot.txt"
+log_file = "/N/project/sico/nn_server/log.txt"
+password = "xiao"
+
+[models]
+model_path='../ML/models_/'
+train_set_path='../ML/training_points/o/'
+temp_path='../ML/transfer_temp/'
+
+
+#model_path='../ML/models/'
+#train_set_path='../ML/training_points/10%/'
+
+#model_path='../ML/models/'
+#train_set_path='../ML/training_points/10%/'
+
+

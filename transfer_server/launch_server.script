@@ -1,0 +1,29 @@
+#!/bin/bash
+
+#SBATCH -J test
+#SBATCH -p general
+#SBATCH -o output/test_%j.txt
+#SBATCH -e error/test_%j.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=zhu17@iu.edu
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=64
+#SBATCH --time=60:00:00
+#SBATCH --mem=96G
+#SBATCH -A r00395
+
+#Load any modules that your program needs
+module load python/3.11
+#module load anaconda
+#conda activate NN
+#conda activate NN or NN_3.10
+python --version
+echo job_id = $SLURM_JOBID
+
+#Run your program
+#python -m Pyro4.naming
+#SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYRO_LOGFILE=pyro.log
+export PYRO_LOGLEVEL=DEBUG
+python $SLURM_SUBMIT_DIR/nn_host.py>$SLURM_SUBMIT_DIR/output/nn_server_log_$SLURM_JOBID.txt
+
