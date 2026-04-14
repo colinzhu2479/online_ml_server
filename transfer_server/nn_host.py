@@ -1,7 +1,4 @@
-'''
-Development log:
-3/2: prediction method updated; retraining method initializatin updated
-'''
+
 
 import numpy as np
 import Pyro4
@@ -72,7 +69,7 @@ class NnServer(object):
     e_model_para = dict({})
     f_model_para = dict({})
 
-    e_model_temp = dict({})  # model copy for
+    e_model_temp = dict({})  # model copy
     f_model_temp = dict({})
     transfer_set = dict({})  # {id:[(xyz,F1,E1),()]} #storing transfer data from client
     # second thought {id:[((x_dist_list, y_dist_list, z_dist_list),(F_x, F_y, F_z), E1),()]}
@@ -412,7 +409,8 @@ class NnServer(object):
                         NnServer._lock2[id] = threading.Lock()
             except Exception as e:
                 print(f"CRITICAL ERROR during retraining for {id}: {e}")
-                traceback.print_exc()
+                err_str = traceback.format_exc()
+                print("Error_info:",err_str)
             finally: #clean up
                 if id in NnServer.can_predict and id in NnServer._lock2:
                     with NnServer._lock2[id]:
@@ -578,11 +576,12 @@ def save_model_info(time_tag, transfer_order, time_spent, id, transfer_temp, tra
         f.write(f'transfer order: {transfer_order}\n')
 
     np.savetxt(temp_path + 'transfer_xd.txt', transfer_temp)
-    np.savetxt(temp_path+ "order_used.txt", transfer_order)
+    np.savetxt(temp_path+ "order_used.txt", transfer_order, fmt="%i")
     np.savetxt(temp_path + 'transfer_e.txt', transfer_e)
-    np.savetxt(temp_path + 'transfer_f.txt', transfer_f)
-    np.savetxt(temp_path + 'transfer_xyz.txt', transfer_xyz)
-    np.savetxt(temp_path + 'transfer_atn.txt', transfer_atn)
+    #print(transfer_f[0], type(transfer_f[0]))
+    np.savetxt(temp_path + 'transfer_f.txt', np.asarray(transfer_f, dtype=float).reshape(len(transfer_f), len(transfer_f[0])*3))
+    np.savetxt(temp_path + 'transfer_xyz.txt', np.asarray(transfer_xyz, dtype=float).reshape(len(transfer_xyz), len(transfer_xyz[0])*3))
+    np.savetxt(temp_path + 'transfer_atn.txt', transfer_atn,fmt="%i")
     return
 
 
