@@ -1,5 +1,7 @@
-tomli >= 1.1.0 ; python_version < '3.11'
+tomli >= 1.1.0 ; python_version <= '3.11'
 numpy ~= 1.23.5
 scipy
 tensorflow ~=2.8
+scikit-learn
 matplotlib
+pyro4
