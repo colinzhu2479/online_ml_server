@@ -227,7 +227,7 @@ class NnServer(object):
                 NnServer.transfer_set[id] = {
                     'xd': [x_dist], 'yd': [y_dist], 'zd': [z_dist],
                     'xf': [x_f], 'yf': [y_f], 'zf': [z_f], 'e': [e], 
-                    'f':[list(chain.from_iterable(f))], 'xyz':[list(chain.from_iterable(xyz))], 'atn':[atn]
+                    'f':[f], 'xyz':[xyz], 'atn':[atn]
                 }
                 NnServer.transfer_size[id] = num_atom ** 2 * 10
                 NnServer.on_training[id] = False
