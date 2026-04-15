@@ -6,6 +6,7 @@ An independent client-server style prediction architecture in which an online ML
 
 ![Architecture Diagram](docs/images/server.png)
 
+
 ---
 
 ## Launch on HPC
@@ -27,5 +28,19 @@ python nn_host.py
 ```
 
 ## Dependencies
+See requirement.txt
 
 ## Module Reference
+Remote server instruction:
+```
+python transfer_server/check_status.py ### check server running status
+python transfer_server/clear_status.py ### reset prediction counts
+python transfer_server/connection_info.py ### check IP address, connection, server launch time
+python transfer_server/shutdown.py ### shutdown server
+```
+
+Toolkit:
+```
+toolkit/save_cluster.py
+toolkit/combine_training.py
+```
