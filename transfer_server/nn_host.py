@@ -52,158 +52,156 @@ running: bool = True
 print = functools.partial(print, flush=True)
 
 
-def _auto_log(stop_event: threading.Event) -> None:
-    """
-    Background thread target that periodically logs the server status.
-    
-    Args:
-        stop_event (threading.Event): Event to signal the logging thread to stop.
-    """
-    f_path = log_path + 'history.txt'
-    while not stop_event.wait(timeout=1800):
-        mode = 'a' if os.path.exists(f_path) else 'w'
-        with open(f_path, mode) as f:
-            t = time.ctime()
-            f.write(t + '\n')
-            f.write(get_stat())
-
-
 @Pyro4.expose
 class NnServer(object):
     """
     Pyro4 RPC Server class exposing ML prediction and retraining endpoints to clients.
     Manages loaded neural network models, incoming transfer data, and concurrent requests.
     """
-    sim_list: Dict[str, List[int]] = {}  # [predictable_count, non_predictable_count]
-    transfer_info: Dict[str, List[Any]] = {} 
-
-    e_model_list: Dict[str, keras.Model] = {}
-    f_model_list: Dict[str, keras.Model] = {}
-
-    e_model_para: Dict[str, List[float]] = {}
-    f_model_para: Dict[str, List[float]] = {}
-
-    e_model_temp: Dict[str, keras.Model] = {}  # Model copies for retraining
-    f_model_temp: Dict[str, keras.Model] = {}
-    
-    # Stores transfer data sent from clients
-    transfer_set: Dict[str, Dict[str, List[Any]]] = {}  
-    transfer_temp: Dict[str, Dict[str, List[Any]]] = {}  
-
-    e_train_set: Dict[str, List[Any]] = {} 
-    train_set: Dict[str, Dict[str, List[Any]]] = {}  
-
-    tree: Dict[str, spatial.KDTree] = {}
-    raw_tree: Dict[str, spatial.KDTree] = {}
-    train_set_min_dis: Dict[str, float] = {}  
-
-    transfer_size: Dict[str, int] = {}
-    radius: Dict[str, float] = {}
-    inertia: Dict[str, float] = {}
-    on_training: Dict[str, bool] = {}
-
-    can_predict: Dict[str, bool] = {}
-    predicting: Dict[str, int] = {}
-
-    n_p: int = 0
-    n_c: int = 0
-
-    stop_event: threading.Event = threading.Event()
-    thread0: threading.Thread = threading.Thread(target=_auto_log, args=(stop_event,), daemon=False)
-    thread0.start()
-
-    _init_locks: Dict[str, threading.Lock] = {}
-    _lock0: threading.Lock = threading.Lock()  
-    _lock: Dict[str, threading.Lock] = {}  
-    _lock2: Dict[str, threading.Lock] = {}  
 
     def __init__(self, config: Dict[str, Any]):
         """
-        Initializes the NnServer with paths from the provided configuration.
+        Initializes the NnServer with paths from the provided configuration and 
+        sets up all instance variables for state management.
         """
         self.model_path = config['models']['model_path']
         self.train_set_path = config['models']['train_set_path']
         self.temp_path = config['models']['temp_path']
 
+        # Instance state variables
+        self.sim_list: Dict[str, List[int]] = {}  # [predictable_count, non_predictable_count]
+        self.transfer_info: Dict[str, List[Any]] = {} 
+
+        self.e_model_list: Dict[str, keras.Model] = {}
+        self.f_model_list: Dict[str, keras.Model] = {}
+
+        self.e_model_para: Dict[str, List[float]] = {}
+        self.f_model_para: Dict[str, List[float]] = {}
+
+        self.e_model_temp: Dict[str, keras.Model] = {}  # Model copies for retraining
+        self.f_model_temp: Dict[str, keras.Model] = {}
+        
+        # Stores transfer data sent from clients
+        self.transfer_set: Dict[str, Dict[str, List[Any]]] = {}  
+        self.transfer_temp: Dict[str, Dict[str, List[Any]]] = {}  
+
+        self.e_train_set: Dict[str, List[Any]] = {} 
+        self.train_set: Dict[str, Dict[str, List[Any]]] = {}  
+
+        self.tree: Dict[str, spatial.KDTree] = {}
+        self.raw_tree: Dict[str, spatial.KDTree] = {}
+        self.train_set_min_dis: Dict[str, float] = {}  
+
+        self.transfer_size: Dict[str, int] = {}
+        self.radius: Dict[str, float] = {}
+        self.inertia: Dict[str, float] = {}
+        self.on_training: Dict[str, bool] = {}
+
+        self.can_predict: Dict[str, bool] = {}
+        self.predicting: Dict[str, int] = {}
+
+        self.n_p: int = 0
+        self.n_c: int = 0
+
+        # Concurrency and logging primitives
+        self.stop_event: threading.Event = threading.Event()
+        self._init_locks: Dict[str, threading.Lock] = {}
+        self._lock0: threading.Lock = threading.Lock()  
+        self._lock: Dict[str, threading.Lock] = {}  
+        self._lock2: Dict[str, threading.Lock] = {}  
+
+        # Start background logging thread
+        self.thread0: threading.Thread = threading.Thread(target=self._auto_log, daemon=False)
+        self.thread0.start()
+
+    def _auto_log(self) -> None:
+        """Background thread target that periodically logs the server status."""
+        f_path = log_path + 'history.txt'
+        while not self.stop_event.wait(timeout=1800):
+            mode = 'a' if os.path.exists(f_path) else 'w'
+            with open(f_path, mode) as f:
+                t = time.ctime()
+                f.write(t + '\n')
+                f.write(self.get_stat())
+
+    def get_stat(self) -> str:
+        """Format and return high-level server stats for periodic logging."""
+        training = ', '.join([i for i, is_training in self.on_training.items() if is_training])
+        status = f'Server status at {time.ctime()}:\nModels loaded: {list(self.sim_list.keys())}\nModels on training: {training}\nTotal prediction: {self.n_p}\nTotal not predicted: {self.n_c}\n\nModel predictability info (predictable, non-predictable):\n'
+        for idd, counts in self.sim_list.items():
+            status += f'{idd}: {counts}\n'
+        return status + '\n'
+
     def query(self, xyz: List[List[float]], atn: List[int], clu_r: float = 1.0, classify: bool = True) -> List[Any]:
         """
         Endpoint for clients to query energy and force predictions for a specific configuration.
-        
-        Args:
-            xyz: Cartesian coordinates.
-            atn: Atomic numbers.
-            clu_r: Clustering radius multiplier.
-            classify: If True, evaluates if the geometry is within the known KDTree domain before predicting.
-            
-        Returns:
-            List containing [is_predictable, predicted_energy, predicted_forces] or just [is_predictable] if False.
         """
         xyz_t, atn_t = nn_preprocess.input_process(np.array(xyz), np.array(atn, dtype=int), transfer_fragment=True)
         id = get_name(get_id(atn_t))
         num = len(atn_t)
 
-        if id not in NnServer.sim_list:
-            gateway_lock = NnServer._init_locks.setdefault(id, threading.Lock())
+        if id not in self.sim_list:
+            gateway_lock = self._init_locks.setdefault(id, threading.Lock())
             with gateway_lock:
-                if id not in NnServer.sim_list:
+                if id not in self.sim_list:
                     try:
                         e_temp, para_temp = load_energy_model([id], self.model_path)
-                        NnServer.e_model_list.update(e_temp)
-                        NnServer.e_model_para.update(para_temp)
+                        self.e_model_list.update(e_temp)
+                        self.e_model_para.update(para_temp)
                     except:
                         return [False]
                     else:
-                        NnServer.sim_list[id] = [0, 0]
-                        NnServer.can_predict[id] = True
-                        NnServer.predicting[id] = 0
-                        NnServer._lock2[id] = threading.Lock()
+                        self.sim_list[id] = [0, 0]
+                        self.can_predict[id] = True
+                        self.predicting[id] = 0
+                        self._lock2[id] = threading.Lock()
 
                         for tar in ['x', 'y', 'z']:
                             f_temp, fpara_temp = load_force_model([id], tar, self.model_path)
-                            NnServer.f_model_list.update(f_temp)
-                            NnServer.f_model_para.update(fpara_temp)
+                            self.f_model_list.update(f_temp)
+                            self.f_model_para.update(fpara_temp)
 
                         if classify:
-                            NnServer.e_train_set[id] = np.loadtxt(self.train_set_path + id + '_train.txt').tolist()
-                            NnServer.tree[id] = spatial.KDTree(NnServer.e_train_set[id])
-                            NnServer.raw_tree[id] = spatial.KDTree(NnServer.e_train_set[id])
-                            NnServer.radius[id] = np.loadtxt(self.train_set_path + id + '_radius.txt').reshape(-1)[0] * clu_r
-                            NnServer.inertia[id] = np.loadtxt(self.train_set_path + id + '_inertia.txt').reshape(-1)[0] * clu_r
+                            self.e_train_set[id] = np.loadtxt(self.train_set_path + id + '_train.txt').tolist()
+                            self.tree[id] = spatial.KDTree(self.e_train_set[id])
+                            self.raw_tree[id] = spatial.KDTree(self.e_train_set[id])
+                            self.radius[id] = np.loadtxt(self.train_set_path + id + '_radius.txt').reshape(-1)[0] * clu_r
+                            self.inertia[id] = np.loadtxt(self.train_set_path + id + '_inertia.txt').reshape(-1)[0] * clu_r
 
-        predictable = True if not classify else bool(__classify__(xyz_t, NnServer.tree[id], NnServer.radius[id]))
+        predictable = True if not classify else bool(__classify__(xyz_t, self.tree[id], self.radius[id]))
 
         if predictable:
             while True:
-                with NnServer._lock2[id]:
-                    if NnServer.can_predict[id]:
-                        NnServer.predicting[id] += 1
+                with self._lock2[id]:
+                    if self.can_predict[id]:
+                        self.predicting[id] += 1
                         break
                 time.sleep(0.01)
 
             try:
-                p_e = predict_energy(xyz_t, [np.arange(len(atn_t))], NnServer.e_model_list, NnServer.e_model_para, id)[0]
-                p_f = predict_force(atn, xyz, [np.arange(len(atn_t))], NnServer.f_model_list, NnServer.f_model_para, id)[0]
+                p_e = predict_energy(xyz_t, [np.arange(len(atn_t))], self.e_model_list, self.e_model_para, id)[0]
+                p_f = predict_force(atn, xyz, [np.arange(len(atn_t))], self.f_model_list, self.f_model_para, id)[0]
             finally:
-                with NnServer._lock2[id]:
-                    NnServer.predicting[id] -= 1
+                with self._lock2[id]:
+                    self.predicting[id] -= 1
 
-            NnServer.n_p += 1
-            NnServer.sim_list[id][0] += 1
+            self.n_p += 1
+            self.sim_list[id][0] += 1
             return [predictable, p_e[0].tolist(), p_f.tolist()]
         else:
-            NnServer.n_c += 1
-            NnServer.sim_list[id][1] += 1
+            self.n_c += 1
+            self.sim_list[id][1] += 1
             return [predictable]
 
     def get_status(self) -> str:
         """Returns the current operational status of the server."""
-        training = ', '.join([i for i, is_training in NnServer.on_training.items() if is_training])
-        status = f'Server status at {time.ctime()}:\nModels loaded: {list(NnServer.sim_list.keys())}\nModels on training: {training}\nTotal prediction: {NnServer.n_p}\nTotal not predicted: {NnServer.n_c}\n\nModel predictability info (predictable, non-predictable):\n'
-        for idd, counts in NnServer.sim_list.items():
+        training = ', '.join([i for i, is_training in self.on_training.items() if is_training])
+        status = f'Server status at {time.ctime()}:\nModels loaded: {list(self.sim_list.keys())}\nModels on training: {training}\nTotal prediction: {self.n_p}\nTotal not predicted: {self.n_c}\n\nModel predictability info (predictable, non-predictable):\n'
+        for idd, counts in self.sim_list.items():
             status += f'{idd}: {counts}\n'
         status += '\nCollected transfer size:\n'
-        for idd in NnServer.transfer_set.keys():
-            status += f"{idd}: {len(NnServer.transfer_set[idd]['zd'])}/{NnServer.transfer_size[idd]}\n"
+        for idd in self.transfer_set.keys():
+            status += f"{idd}: {len(self.transfer_set[idd]['zd'])}/{self.transfer_size[idd]}\n"
         return status
 
     @Pyro4.oneway
@@ -221,36 +219,36 @@ class NnServer(object):
         y_dist, y_f = prepare_transfer.get_force_io(np.array(xyz), atn, num_atom, f, 'y')
         z_dist, z_f = prepare_transfer.get_force_io(np.array(xyz), atn, num_atom, f, 'z')
 
-        fragment_lock = NnServer._lock.setdefault(id, threading.Lock())
+        fragment_lock = self._lock.setdefault(id, threading.Lock())
         with fragment_lock:
-            if id not in NnServer.transfer_set:
-                NnServer.transfer_set[id] = {
+            if id not in self.transfer_set:
+                self.transfer_set[id] = {
                     'xd': [x_dist], 'yd': [y_dist], 'zd': [z_dist],
                     'xf': [x_f], 'yf': [y_f], 'zf': [z_f], 'e': [e], 
-                    'f':[f], 'xyz':[xyz], 'atn':[atn]
+                    'f':[list(chain.from_iterable(f))], 'xyz':[list(chain.from_iterable(xyz))], 'atn':[atn]
                 }
-                NnServer.transfer_size[id] = num_atom ** 2 * 10
-                NnServer.on_training[id] = False
+                self.transfer_size[id] = num_atom ** 2 * 10
+                self.on_training[id] = False
             else:
-                NnServer.transfer_set[id]['xd'].append(x_dist)
-                NnServer.transfer_set[id]['yd'].append(y_dist)
-                NnServer.transfer_set[id]['zd'].append(z_dist)
-                NnServer.transfer_set[id]['xf'].append(x_f)
-                NnServer.transfer_set[id]['yf'].append(y_f)
-                NnServer.transfer_set[id]['zf'].append(z_f)
-                NnServer.transfer_set[id]['e'].append(e)
-                NnServer.transfer_set[id]['f'].append(f)
-                NnServer.transfer_set[id]['xyz'].append(xyz)
-                NnServer.transfer_set[id]['atn'].append(atn)
+                self.transfer_set[id]['xd'].append(x_dist)
+                self.transfer_set[id]['yd'].append(y_dist)
+                self.transfer_set[id]['zd'].append(z_dist)
+                self.transfer_set[id]['xf'].append(x_f)
+                self.transfer_set[id]['yf'].append(y_f)
+                self.transfer_set[id]['zf'].append(z_f)
+                self.transfer_set[id]['e'].append(e)
+                self.transfer_set[id]['f'].append(f)
+                self.transfer_set[id]['xyz'].append(xyz)
+                self.transfer_set[id]['atn'].append(atn)
 
         trigger_update = False
-        with NnServer._lock[id]:
-            if len(NnServer.transfer_set[id]['xd']) >= NnServer.transfer_size[id] and not NnServer.on_training[id]:
-                NnServer.on_training[id] = True
+        with self._lock[id]:
+            if len(self.transfer_set[id]['xd']) >= self.transfer_size[id] and not self.on_training[id]:
+                self.on_training[id] = True
                 trigger_update = True
                 print(f'transfer triggered on {time.ctime()} for {id}')
-                NnServer.transfer_temp[id] = copy.deepcopy(NnServer.transfer_set[id])
-                NnServer.transfer_set[id] = {'xd': [], 'yd': [], 'zd': [], 'xf': [], 'yf': [], 'zf': [], 'e': [], 'f':[], 'xyz':[], 'atn':[]}
+                self.transfer_temp[id] = copy.deepcopy(self.transfer_set[id])
+                self.transfer_set[id] = {'xd': [], 'yd': [], 'zd': [], 'xf': [], 'yf': [], 'zf': [], 'e': [], 'f':[], 'xyz':[], 'atn':[]}
 
         if trigger_update:
             try:
@@ -258,39 +256,36 @@ class NnServer(object):
                 time_ = time.time()
                 
                 # Check if model exists; if not, initialize one
-                if id in NnServer.sim_list.keys():
-                    if id not in NnServer.train_set.keys():
-                        NnServer.train_set[id] = prepare_transfer.load_force_input(id, self.train_set_path)
+                if id in self.sim_list.keys():
+                    if id not in self.train_set.keys():
+                        self.train_set[id] = prepare_transfer.load_force_input(id, self.train_set_path)
 
-                    if id + 'p' not in NnServer.e_model_temp.keys():
-                        NnServer.e_model_temp[id + 'p'] = keras.models.load_model(self.model_path + f'{id}/' + "%s_primary.tf" % str(id), custom_objects={"Dense": tf.keras.layers.Dense})
-                        NnServer.e_model_temp[id + 's'] = keras.models.load_model(self.model_path + f'{id}/' + "%s_secondary.tf" % str(id), custom_objects={"Dense": tf.keras.layers.Dense})
+                    if id + 'p' not in self.e_model_temp.keys():
+                        self.e_model_temp[id + 'p'] = keras.models.load_model(self.model_path + f'{id}/' + "%s_primary.tf" % str(id), custom_objects={"Dense": tf.keras.layers.Dense})
+                        self.e_model_temp[id + 's'] = keras.models.load_model(self.model_path + f'{id}/' + "%s_secondary.tf" % str(id), custom_objects={"Dense": tf.keras.layers.Dense})
                         for direction in ['x', 'y', 'z']:
-                            NnServer.f_model_temp[direction + id + 'p'] = keras.models.load_model(self.model_path + f'{id}/{direction}/' + "%s_primary.tf" % str(id))
-                            NnServer.f_model_temp[direction + id + 's'] = keras.models.load_model(self.model_path + f'{id}/{direction}/' + "%s_secondary.tf" % str(id))
+                            self.f_model_temp[direction + id + 'p'] = keras.models.load_model(self.model_path + f'{id}/{direction}/' + "%s_primary.tf" % str(id))
+                            self.f_model_temp[direction + id + 's'] = keras.models.load_model(self.model_path + f'{id}/{direction}/' + "%s_secondary.tf" % str(id))
                 else:
-                    initialize_model(id, num_atom, time_tag, self.temp_path, ratio=ratio)
+                    self.initialize_model(id, num_atom, time_tag, self.temp_path, ratio=ratio)
 
                 # Transfer learning Execution
                 transfer_order, transfer_order_list = transfer.main(
-                    np.array(NnServer.train_set[id]['zd']), np.array(NnServer.train_set[id]['e']),
-                    np.array(NnServer.transfer_temp[id]['zd']), np.array(NnServer.transfer_temp[id]['e']),
-                    NnServer.e_model_temp, NnServer.e_model_para, NnServer.radius[id], NnServer.inertia[id], 
-                    id, len(NnServer.transfer_temp[id]['xf'][0]), direction=''
+                    np.array(self.train_set[id]['zd']), np.array(self.train_set[id]['e']),
+                    np.array(self.transfer_temp[id]['zd']), np.array(self.transfer_temp[id]['e']),
+                    self.e_model_temp, self.e_model_para, self.radius[id], self.inertia[id], 
+                    id, len(self.transfer_temp[id]['xf'][0]), direction=''
                 ) 
                 
                 for direction in ['x', 'y', 'z']:
                     transfer.main_with_order(
-                        np.array(NnServer.train_set[id][direction + 'd']), np.array(NnServer.train_set[id][direction + 'f']),
-                        np.array(NnServer.transfer_temp[id][direction + 'd']), np.array(NnServer.transfer_temp[id][direction + 'f']), 
-                        NnServer.f_model_temp, NnServer.f_model_para, id, len(NnServer.transfer_temp[id]['xf'][0]), 
+                        np.array(self.train_set[id][direction + 'd']), np.array(self.train_set[id][direction + 'f']),
+                        np.array(self.transfer_temp[id][direction + 'd']), np.array(self.transfer_temp[id][direction + 'f']), 
+                        self.f_model_temp, self.f_model_para, id, len(self.transfer_temp[id]['xf'][0]), 
                         transfer_order_list, direction=direction
                     )
 
-                save_model_info(time_tag, transfer_order, round(time.time() - time_, 2), id,
-                                NnServer.transfer_temp[id]['zd'], NnServer.transfer_temp[id]['e'], NnServer.transfer_temp[id]['f'], 
-                                NnServer.transfer_temp[id]['xyz'], NnServer.transfer_temp[id]['atn'], self.temp_path, 
-                                NnServer.tree, NnServer.raw_tree)
+                self.save_model_info(time_tag, transfer_order, round(time.time() - time_, 2), id)
 
                 # Reload newly minted models into memory
                 new_e_primary = keras.models.load_model(self.temp_path + f'{id}/{time_tag}/%s_primary.tf' % id)
@@ -301,145 +296,163 @@ class NnServer(object):
                     temp_f_dict[direction + id + 'p'] = keras.models.load_model(self.temp_path + f'{id}/{time_tag}/{direction}/' +"%s_primary.tf" % str(id))
                     temp_f_dict[direction + id + 's'] = keras.models.load_model(self.temp_path + f'{id}/{time_tag}/{direction}/' +"%s_secondary.tf" % str(id))
 
-                NnServer.e_train_set[id].extend([NnServer.transfer_temp[id]['zd'][i] for i in transfer_order])
-                temp_tree = spatial.KDTree(NnServer.e_train_set[id])
+                self.e_train_set[id].extend([self.transfer_temp[id]['zd'][i] for i in transfer_order])
+                temp_tree = spatial.KDTree(self.e_train_set[id])
 
                 # Commit new configurations to historical training data cache
                 for k in ['xd', 'yd', 'zd', 'xf', 'yf', 'zf', 'e']:
-                    NnServer.train_set[id][k].extend([NnServer.transfer_temp[id][k][i] for i in transfer_order])
+                    self.train_set[id][k].extend([self.transfer_temp[id][k][i] for i in transfer_order])
 
                 # Temporarily lock inquiries to perform hot-swap of models
-                if id in NnServer.sim_list.keys(): 
+                if id in self.sim_list.keys(): 
                     while True:
-                        with NnServer._lock2[id]:
-                            NnServer.can_predict[id] = False
-                            if NnServer.predicting[id] <= 0:
+                        with self._lock2[id]:
+                            self.can_predict[id] = False
+                            if self.predicting[id] <= 0:
                                 break
                         time.sleep(0.01)
 
-                NnServer.tree[id] = temp_tree
-                NnServer.e_model_list[id + 'p'] = new_e_primary
-                NnServer.e_model_list[id + 's'] = new_e_secondary
+                self.tree[id] = temp_tree
+                self.e_model_list[id + 'p'] = new_e_primary
+                self.e_model_list[id + 's'] = new_e_secondary
 
                 for direction in ['x', 'y', 'z']:
-                    NnServer.f_model_list[direction + id + 'p'] = temp_f_dict[direction + id + 'p']
-                    NnServer.f_model_list[direction + id + 's'] = temp_f_dict[direction + id + 's']
+                    self.f_model_list[direction + id + 'p'] = temp_f_dict[direction + id + 'p']
+                    self.f_model_list[direction + id + 's'] = temp_f_dict[direction + id + 's']
 
-                if id not in NnServer.sim_list.keys():
-                    gateway_lock = NnServer._init_locks.setdefault(id, threading.Lock())
+                if id not in self.sim_list.keys():
+                    gateway_lock = self._init_locks.setdefault(id, threading.Lock())
                     with gateway_lock:
-                        NnServer.sim_list[id] = [0, len(NnServer.transfer_set[id]["xd"]) + len(NnServer.transfer_temp[id]['xd'])]
-                        NnServer.can_predict[id] = True
-                        NnServer.predicting[id] = 0
-                        NnServer._lock2[id] = threading.Lock()
+                        self.sim_list[id] = [0, len(self.transfer_set[id]["xd"]) + len(self.transfer_temp[id]['xd'])]
+                        self.can_predict[id] = True
+                        self.predicting[id] = 0
+                        self._lock2[id] = threading.Lock()
             except Exception as e:
                 print(f"CRITICAL ERROR during retraining for {id}: {e}")
                 err_str = traceback.format_exc()
                 print("Error_info:", err_str)
             finally: 
                 # Re-enable inquiries
-                if id in NnServer.can_predict and id in NnServer._lock2:
-                    with NnServer._lock2[id]:
-                        NnServer.can_predict[id] = True
-                if id in NnServer.transfer_temp:
-                    del NnServer.transfer_temp[id]
+                if id in self.can_predict and id in self._lock2:
+                    with self._lock2[id]:
+                        self.can_predict[id] = True
+                if id in self.transfer_temp:
+                    del self.transfer_temp[id]
                 gc.collect()
-                with NnServer._lock[id]:
-                    NnServer.on_training[id] = False
+                with self._lock[id]:
+                    self.on_training[id] = False
                 print(f'transfer finished on {time.ctime()} for {id}')
+
+    def initialize_model(self, id: str, num_atom: int, time_tag: str, temp_p: str, ratio: float = 1.0) -> None:
+        """Initializes network architectures and dynamic threshold scaling for a novel fragment."""
+        print(f'Model initialization :{id}')
+        self.train_set[id] = {'xd': [], 'yd': [], 'zd': [], 'xf': [], 'yf': [], 'zf': [], 'e': []}
+
+        # Initialize generic initial models based on dimension metadata
+        self.e_model_temp[id + 'p'] = model_init.build_model(self.transfer_temp[id]['zd'][0], 'energy', num_atom, 4, 4)
+        self.e_model_temp[id + 's'] = model_init.build_model(self.transfer_temp[id]['zd'][0], 'energy', num_atom, 4, 4)
+        
+        x_range, x_min, y_range, y_min, e_range, e_min = model_init.def_normalization(
+            np.array(self.transfer_temp[id]['zd']), np.array(self.transfer_temp[id]['e']), 'energy')
+            
+        self.e_model_para[id + 'px'] = [x_range, x_min]
+        self.e_model_para[id + 'py'] = [y_range, y_min]
+        self.e_model_para[id + 'sy'] = [e_range, e_min]
+
+        temp_path = temp_p + f'{id}/init/'
+        save_para(id, x_range, x_min, y_range, y_min, e_range, e_min, Path(temp_path), temp_path)
+
+        self.e_train_set[id] = []
+        self.tree[id] = spatial.KDTree(self.transfer_temp[id]['zd'])
+        self.raw_tree[id] = spatial.KDTree(self.transfer_temp[id]['zd'])
+
+        # Determine thresholds based on atom counts
+        if num_atom == 3:
+            self.radius[id] = 0.01032071
+            self.inertia[id] = 0.000003050566
+        elif num_atom == 4:
+            self.radius[id] = 0.04085604
+            self.inertia[id] = 0.000304219896
+        elif num_atom == 6:
+            self.radius[id] = 0.15443308
+            self.inertia[id] = 0.001101525739
+        elif num_atom == 7:
+            self.radius[id] = 0.18680639
+            self.inertia[id] = 0.002386698899
+        elif num_atom > 4:
+            self.radius[id] = 0.03 * num_atom * ratio
+            self.inertia[id] = 0.01 * self.radius[id] * math.sqrt(len(self.transfer_temp[id]['zd'][0])) * ratio
+        elif num_atom >= 3:
+            self.radius[id] = (0.03 * num_atom - 0.08) * ratio
+            self.inertia[id] = (0.01 * self.radius[id] * math.sqrt(len(self.transfer_temp[id]['zd'][0])) - 0.00017) * ratio
+
+        for direction in ['x', 'y', 'z']:
+            self.f_model_temp[direction + id + 'p'] = model_init.build_model(
+                self.transfer_temp[id][f'{direction}d'][0], 'force', num_atom, 6, 4)
+            self.f_model_temp[direction + id + 's'] = model_init.build_model(
+                self.transfer_temp[id][f'{direction}d'][0], 'force', num_atom, 6, 4)
+                
+            x_range, x_min, y_range, y_min, e_range, e_min = model_init.def_normalization(
+                np.array(self.transfer_temp[id][f'{direction}d']),
+                np.array(self.transfer_temp[id][f'{direction}f']), 'force')
+
+            self.f_model_para[direction + id + 'px'] = [x_range, x_min]
+            self.f_model_para[direction + id + 'py'] = [y_range, y_min]
+            self.f_model_para[direction + id + 'sy'] = [e_range, e_min]
+
+            save_para(id, x_range, x_min, y_range, y_min, e_range, e_min, Path(temp_path + f'{direction}/'), temp_path+ f'{direction}/')
+
+    def save_model_info(self, time_tag: str, transfer_order: List[int], time_spent: float, id: str) -> None:
+        """Saves Keras models and logs post-transfer learning execution."""
+        temp_path = self.temp_path + f'{id}/{time_tag}/'
+        Path(temp_path).mkdir(parents=True, exist_ok=True)
+        
+        self.e_model_temp[f"{id}p"].save(temp_path + f"{id}_primary.tf", overwrite=True)
+        self.e_model_temp[f"{id}s"].save(temp_path + f"{id}_secondary.tf", overwrite=True)
+
+        for direction in ['x', 'y', 'z']:
+            Path(temp_path + direction + '/').mkdir(parents=True, exist_ok=True)
+            self.f_model_temp[direction + f"{id}p"].save(temp_path + direction + f"/{id}_primary.tf", overwrite=True)
+            self.f_model_temp[direction + f"{id}s"].save(temp_path + direction + f"/{id}_secondary.tf", overwrite=True)
+
+        with open(temp_path + 'transfer_info.txt', "w") as f:
+            f.write(f'Time: {time.ctime()}\n')
+            f.write(f'train set size: {len(self.train_set[id]["xd"])}\n')
+            f.write(f'transfer set size: {len(self.transfer_temp[id]["zd"])}\n')
+            f.write(f'transfer used size: {len(transfer_order)}\n')
+            f.write(f'transfer wall time spend: {time_spent}s\n')
+            
+        np.savetxt(temp_path + 'transfer_xd.txt', self.transfer_temp[id]["zd"])
+        np.savetxt(temp_path + "order_used.txt", transfer_order, fmt="%i")
+        np.savetxt(temp_path + 'transfer_e.txt', self.transfer_temp[id]["e"])
 
     @Pyro4.oneway
     def clear_status(self) -> None:
         """Resets prediction and failure counters."""
-        NnServer.n_p = 0
-        NnServer.n_c = 0
-        for i in NnServer.sim_list.keys():
-            NnServer.sim_list[i] = [0, 0]
+        self.n_p = 0
+        self.n_c = 0
+        for i in self.sim_list.keys():
+            self.sim_list[i] = [0, 0]
 
     @Pyro4.oneway
     def shutdown(self) -> None:
         """Gracefully shuts down the server and outputs a final report."""
-        NnServer.stop_event.set()
-        NnServer.thread0.join()
-        status = get_stat()
+        self.stop_event.set()
+        self.thread0.join()
+        status = self.get_stat()
         with open(log_path + 'report.txt', 'w') as f:
             f.write(f'Printed time: {time.ctime()}\n')
-            f.write(f'Total number of predictions: {NnServer.n_p}\n')
-            f.write(f'Total number of calculations: {NnServer.n_c}\n')
+            f.write(f'Total number of predictions: {self.n_p}\n')
+            f.write(f'Total number of calculations: {self.n_c}\n')
             f.write(status)
             print('Server shutting down.')
         global running
         running = False
 
 
-def initialize_model(id: str, num_atom: int, time_tag: str, temp_p: str, ratio: float = 1.0) -> None:
-    """
-    Initializes network architectures and dynamic threshold scaling for a novel fragment.
-    
-    Args:
-        id: Fragment identifier.
-        num_atom: Number of atoms.
-        time_tag: Timestamp string.
-        temp_p: Path for temporary model saving.
-        ratio: Adjustment multiplier for bounding hyperspheres.
-    """
-    print(f'Model initialization :{id}')
-    NnServer.train_set[id] = {'xd': [], 'yd': [], 'zd': [], 'xf': [], 'yf': [], 'zf': [], 'e': []}
-
-    # Initialize generic initial models based on dimension metadata
-    NnServer.e_model_temp[id + 'p'] = model_init.build_model(NnServer.transfer_temp[id]['zd'][0], 'energy', num_atom, 4, 4)
-    NnServer.e_model_temp[id + 's'] = model_init.build_model(NnServer.transfer_temp[id]['zd'][0], 'energy', num_atom, 4, 4)
-    
-    x_range, x_min, y_range, y_min, e_range, e_min = model_init.def_normalization(
-        np.array(NnServer.transfer_temp[id]['zd']), np.array(NnServer.transfer_temp[id]['e']), 'energy')
-        
-    NnServer.e_model_para[id + 'px'] = [x_range, x_min]
-    NnServer.e_model_para[id + 'py'] = [y_range, y_min]
-    NnServer.e_model_para[id + 'sy'] = [e_range, e_min]
-
-    temp_path = temp_p + f'{id}/init/'
-    save_para(id, x_range, x_min, y_range, y_min, e_range, e_min, Path(temp_path), temp_path)
-
-    NnServer.e_train_set[id] = []
-    NnServer.tree[id] = spatial.KDTree(NnServer.transfer_temp[id]['zd'])
-    NnServer.raw_tree[id] = spatial.KDTree(NnServer.transfer_temp[id]['zd'])
-
-    # Determine thresholds based on atom counts
-    if num_atom == 3:
-        NnServer.radius[id] = 0.01032071
-        NnServer.inertia[id] = 0.000003050566
-    elif num_atom == 4:
-        NnServer.radius[id] = 0.04085604
-        NnServer.inertia[id] = 0.000304219896
-    elif num_atom == 6:
-        NnServer.radius[id] = 0.15443308
-        NnServer.inertia[id] = 0.001101525739
-    elif num_atom == 7:
-        NnServer.radius[id] = 0.18680639
-        NnServer.inertia[id] = 0.002386698899
-    elif num_atom > 4:
-        NnServer.radius[id] = 0.03 * num_atom * ratio
-        NnServer.inertia[id] = 0.01 * NnServer.radius[id] * math.sqrt(len(NnServer.transfer_temp[id]['zd'][0])) * ratio
-    elif num_atom >= 3:
-        NnServer.radius[id] = (0.03 * num_atom - 0.08) * ratio
-        NnServer.inertia[id] = (0.01 * NnServer.radius[id] * math.sqrt(len(NnServer.transfer_temp[id]['zd'][0])) - 0.00017) * ratio
-
-    for direction in ['x', 'y', 'z']:
-        NnServer.f_model_temp[direction + id + 'p'] = model_init.build_model(
-            NnServer.transfer_temp[id][f'{direction}d'][0], 'force', num_atom, 6, 4)
-        NnServer.f_model_temp[direction + id + 's'] = model_init.build_model(
-            NnServer.transfer_temp[id][f'{direction}d'][0], 'force', num_atom, 6, 4)
-            
-        x_range, x_min, y_range, y_min, e_range, e_min = model_init.def_normalization(
-            np.array(NnServer.transfer_temp[id][f'{direction}d']),
-            np.array(NnServer.transfer_temp[id][f'{direction}f']), 'force')
-
-        NnServer.f_model_para[direction + id + 'px'] = [x_range, x_min]
-        NnServer.f_model_para[direction + id + 'py'] = [y_range, y_min]
-        NnServer.f_model_para[direction + id + 'sy'] = [e_range, e_min]
-
-        save_para(id, x_range, x_min, y_range, y_min, e_range, e_min, Path(temp_path + f'{direction}/'), temp_path+ f'{direction}/')
-
+# ==========================================
+# Helper functions strictly decoupled from class state
+# ==========================================
 
 def save_para(
     id: str, x_range: float, x_min: float, y_range: float, y_min: float, 
@@ -450,36 +463,6 @@ def save_para(
     np.savetxt(temp_path + f"{id}_p_x.txt", np.concatenate([[x_range], [x_min]], axis=0))
     np.savetxt(temp_path + f"{id}_p_y.txt", np.concatenate([[y_range], [y_min]], axis=0))
     np.savetxt(temp_path + f"{id}_s_y.txt", np.concatenate([[e_range], [e_min]], axis=0))
-
-
-def save_model_info(
-    time_tag: str, transfer_order: List[int], time_spent: float, id: str, 
-    transfer_temp: List[List[float]], transfer_e: List[float], transfer_f: List[List[float]], 
-    transfer_xyz: List[List[float]], transfer_atn: List[int], temp_p: str, 
-    tree: Dict[str, spatial.KDTree], raw_tree: Dict[str, spatial.KDTree]
-) -> None:
-    """Helper function to save Keras models and logs post-transfer learning execution."""
-    temp_path = temp_p + f'{id}/{time_tag}/'
-    Path(temp_path).mkdir(parents=True, exist_ok=True)
-    
-    NnServer.e_model_temp[f"{id}p"].save(temp_path + f"{id}_primary.tf", overwrite=True)
-    NnServer.e_model_temp[f"{id}s"].save(temp_path + f"{id}_secondary.tf", overwrite=True)
-
-    for direction in ['x', 'y', 'z']:
-        Path(temp_path + direction + '/').mkdir(parents=True, exist_ok=True)
-        NnServer.f_model_temp[direction + f"{id}p"].save(temp_path + direction + f"/{id}_primary.tf", overwrite=True)
-        NnServer.f_model_temp[direction + f"{id}s"].save(temp_path + direction + f"/{id}_secondary.tf", overwrite=True)
-
-    with open(temp_path + 'transfer_info.txt', "w") as f:
-        f.write(f'Time: {time.ctime()}\n')
-        f.write(f'train set size: {len(NnServer.train_set[id]["xd"])}\n')
-        f.write(f'transfer set size: {len(transfer_temp)}\n')
-        f.write(f'transfer used size: {len(transfer_order)}\n')
-        f.write(f'transfer wall time spend: {time_spent}s\n')
-        
-    np.savetxt(temp_path + 'transfer_xd.txt', transfer_temp)
-    np.savetxt(temp_path + "order_used.txt", transfer_order, fmt="%i")
-    np.savetxt(temp_path + 'transfer_e.txt', transfer_e)
 
 
 def __classify__(xyz: np.ndarray, tree_o: spatial.KDTree, radius: float) -> bool:
@@ -554,15 +537,6 @@ def predict_force(
         predicted_energy_list[n] = np.matmul(inv_v, reconstructed_force).T
         n += 1
     return predicted_energy_list
-
-
-def get_stat() -> str:
-    """Format and return high-level server stats for periodic logging."""
-    training = ', '.join([i for i, is_training in NnServer.on_training.items() if is_training])
-    status = f'Server status at {time.ctime()}:\nModels loaded: {list(NnServer.sim_list.keys())}\nModels on training: {training}\nTotal prediction: {NnServer.n_p}\nTotal not predicted: {NnServer.n_c}\n\nModel predictability info (predictable, non-predictable):\n'
-    for idd, counts in NnServer.sim_list.items():
-        status += f'{idd}: {counts}\n'
-    return status + '\n'
 
 
 def get_id(atn: np.ndarray) -> str:
